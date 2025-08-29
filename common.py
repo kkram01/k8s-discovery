@@ -1,36 +1,26 @@
-import pandas as pd
-from rich.console import Console
-from rich.table import Table
+import datetime
+import json
+import logging
+import os
 
-def display_data(title: str, data: list[dict]):
-    """
-    Displays data in a rich table format.
-    """
+
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default, like datetime."""
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+def save_to_json(data, output_file):
+    """Saves data to a JSON file."""
     if not data:
-        print(f"No data to display for {title}")
+        logging.info("No data found to save for %s.", output_file)
         return
 
-    console = Console()
-    table = Table(title=title, show_header=True, header_style="bold magenta")
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    # Add columns to the table
-    for key in data[0].keys():
-        table.add_column(key)
-
-    # Add rows to the table
-    for item in data:
-        table.add_row(*[str(value) for value in item.values()])
-
-    console.print(table)
-
-def save_to_csv(filename: str, data: list[dict]):
-    """
-    Saves data to a CSV file.
-    """
-    if not data:
-        print(f"No data to save for {filename}")
-        return
-
-    df = pd.DataFrame(data)
-    df.to_csv(filename, index=False)
-    print(f"Data saved to {filename}")
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, default=json_serial)
+    logging.info("Successfully wrote data to %s", output_file)
