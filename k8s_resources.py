@@ -2,15 +2,41 @@ import base64
 import logging
 import os
 import tempfile
+import re
 import json
 from contextlib import contextmanager
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+import google.auth
+import google.auth.transport.requests
 from eks_token import get_token
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def parse_k8s_quantity(quantity_str):
+    """
+    Parses a Kubernetes quantity string (e.g., '100m', '512Mi', '1Gi') into a numeric value.
+    Returns the value in base units (cores for CPU, bytes for memory).
+    """
+    if not isinstance(quantity_str, str):
+        return 0
+
+    quantity_str = quantity_str.strip()
+    match = re.match(r'^(\d+(\.\d+)?) (E|P|T|G|M|k|Ei|Pi|Ti|Gi|Mi|Ki|m)?$', quantity_str)
+    if not match:
+        return 0  # Cannot parse
+
+    value, _, suffix = match.groups()
+    value = float(value)
+
+    multipliers = {'E': 10**18, 'P': 10**15, 'T': 10**12, 'G': 10**9, 'M': 10**6, 'k': 10**3, 'Ei': 2**60, 'Pi': 2**50, 'Ti': 2**40, 'Gi': 2**30, 'Mi': 2**20, 'Ki': 2**10, 'm': 10**-3}
+
+    if suffix in multipliers:
+        value *= multipliers[suffix]
+    return value
 
 
 @contextmanager
@@ -34,6 +60,52 @@ def _get_api_clients_from_kubeconfig_content(kubeconfig_content):
         if os.path.exists(kubeconfig_path):
             os.remove(kubeconfig_path)
 
+
+@contextmanager
+def _get_api_clients_for_gke(cluster_details, credentials):
+    """Creates Kubernetes API clients for a GKE cluster."""
+    cluster_name = cluster_details.get("name")
+    endpoint = cluster_details.get("endpoint")
+
+    # A cluster might not have an endpoint or auth info if it's not running (e.g., provisioning, stopped).
+    if not endpoint:
+        raise ValueError(f"Cluster '{cluster_name}' is missing an endpoint. Cannot connect to Kubernetes API.")
+    if "master_auth" not in cluster_details or "cluster_ca_certificate" not in cluster_details["master_auth"]:
+        raise ValueError(f"Cluster '{cluster_name}' is missing 'masterAuth' details. This can happen if the cluster is still provisioning or in an error state.")
+
+    ca_data = cluster_details["master_auth"]["cluster_ca_certificate"]
+
+    logging.info("  - Generating GKE token for cluster '%s'", cluster_name)
+
+    # Refresh credentials to get an access token.
+    request = google.auth.transport.requests.Request()
+    credentials.refresh(request)
+    token = credentials.token
+
+    configuration = client.Configuration()
+    configuration.host = f"https://{endpoint}"
+    configuration.api_key["authorization"] = token
+    configuration.api_key_prefix["authorization"] = "Bearer"
+
+    ca_cert_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8") as ca_cert:
+            ca_cert.write(base64.b64decode(ca_data).decode("utf-8"))
+            ca_cert_path = ca_cert.name
+        configuration.ssl_ca_cert = ca_cert_path
+        api_client = client.ApiClient(configuration)
+        yield (
+            client.CoreV1Api(api_client),
+            client.AppsV1Api(api_client),
+            client.BatchV1Api(api_client),
+            client.NetworkingV1Api(api_client),
+            client.AutoscalingV2Api(api_client),
+            client.RbacAuthorizationV1Api(api_client),
+            client.PolicyV1Api(api_client),
+        )
+    finally:
+        if ca_cert_path and os.path.exists(ca_cert_path):
+            os.remove(ca_cert_path)
 
 @contextmanager
 def _get_api_clients_for_eks(cluster_details):
@@ -77,6 +149,8 @@ def get_node_details(api_client):
     try:
         response = api_client.list_node()
         for node in response.items:
+            mem_bytes = parse_k8s_quantity(node.status.allocatable.get('memory', '0'))
+            mem_gib = round(mem_bytes / (1024**3), 2) if mem_bytes > 0 else 0
             nodes.append({
                 'name': node.metadata.name,
                 'status': node.status.conditions[-1].type if node.status.conditions else 'Unknown',
@@ -86,7 +160,7 @@ def get_node_details(api_client):
                 'kernel_version': node.status.node_info.kernel_version,
                 'kubelet_version': node.status.node_info.kubelet_version,
                 'allocatable_cpu': node.status.allocatable.get('cpu', '0'),
-                'allocatable_memory': node.status.allocatable.get('memory', '0'),
+                'allocatable_memory_gib': f"{mem_gib} GiB",
             })
     except ApiException as e:
         logging.error("Error fetching nodes: %s", e)
@@ -119,13 +193,28 @@ def get_deployment_details(api_client):
         for deployment in response.items:
             containers = deployment.spec.template.spec.containers
             container_images = [c.image for c in containers]
+            mounts = []
+            for c in containers:
+                if c.volume_mounts:
+                    for vm in c.volume_mounts:
+                        mounts.append(f"{c.name}:{vm.mount_path} -> {vm.name}")
             deployments.append({
                 'namespace': deployment.metadata.namespace,
                 'name': deployment.metadata.name,
-                'replicas_desired': deployment.spec.replicas,
+                'replicas': deployment.spec.replicas,
                 'replicas_ready': deployment.status.ready_replicas or 0,
                 'strategy': deployment.spec.strategy.type,
+                'creation_timestamp': deployment.metadata.creation_timestamp,
+                'containers': [
+                    {
+                        'name': c.name,
+                        'image': c.image,
+                        'resources': api_client.api_client.sanitize_for_serialization(c.resources)
+                    }
+                    for c in deployment.spec.template.spec.containers
+                ],
                 'container_images': ", ".join(container_images),
+                'volume_mounts': " | ".join(mounts),
             })
     except ApiException as e:
         logging.error("Error fetching deployments: %s", e)
@@ -161,13 +250,25 @@ def get_statefulset_details(api_client):
         for ss in response.items:
             containers = ss.spec.template.spec.containers
             container_images = [c.image for c in containers]
+            volume_templates = json.dumps(
+                api_client.api_client.sanitize_for_serialization(ss.spec.volume_claim_templates)
+            ) if ss.spec.volume_claim_templates else '[]'
             statefulsets.append({
                 'namespace': ss.metadata.namespace,
                 'name': ss.metadata.name,
-                'replicas_desired': ss.spec.replicas,
+                'replicas': ss.spec.replicas,
                 'replicas_ready': ss.status.ready_replicas or 0,
                 'service_name': ss.spec.service_name,
+                'creation_timestamp': ss.metadata.creation_timestamp,
+                'containers': [
+                    {
+                        'name': c.name,
+                        'image': c.image,
+                        'resources': api_client.api_client.sanitize_for_serialization(c.resources)
+                    } for c in ss.spec.template.spec.containers
+                ],
                 'container_images': ", ".join(container_images),
+                'volume_claim_templates': volume_templates,
             })
     except ApiException as e:
         logging.error("Error fetching statefulsets: %s", e)
@@ -180,13 +281,31 @@ def get_daemonset_details(api_client):
         for ds in response.items:
             containers = ds.spec.template.spec.containers
             container_images = [c.image for c in containers]
+            resources = []
+            for c in containers:
+                if c.resources and (c.resources.requests or c.resources.limits):
+                    req = c.resources.requests or {}
+                    lim = c.resources.limits or {}
+                    resources.append(
+                        f"{c.name}(req: cpu={req.get('cpu','-')},mem={req.get('memory','-')}; "
+                        f"lim: cpu={lim.get('cpu','-')},mem={lim.get('memory','-')})"
+                    )
             daemonsets.append({
                 'namespace': ds.metadata.namespace,
                 'name': ds.metadata.name,
                 'desired_scheduled': ds.status.desired_number_scheduled,
                 'current_scheduled': ds.status.current_number_scheduled,
-                'ready': ds.status.number_ready,
+                'creation_timestamp': ds.metadata.creation_timestamp,
+                'containers': [
+                    {
+                        'name': c.name,
+                        'image': c.image,
+                        'resources': api_client.api_client.sanitize_for_serialization(c.resources)
+                    }
+                    for c in ds.spec.template.spec.containers
+                ],
                 'container_images': ", ".join(container_images),
+                'container_resources': " | ".join(resources),
             })
     except ApiException as e:
         logging.error("Error fetching daemonsets: %s", e)
@@ -197,12 +316,15 @@ def get_job_details(api_client):
     try:
         response = api_client.list_job_for_all_namespaces()
         for job in response.items:
+            containers = job.spec.template.spec.containers
+            container_images = [c.image for c in containers]
             jobs.append({
                 'namespace': job.metadata.namespace,
                 'name': job.metadata.name,
                 'completions': job.spec.completions,
                 'succeeded': job.status.succeeded or 0,
                 'failed': job.status.failed or 0,
+                'container_images': ", ".join(container_images),
                 'start_time': job.status.start_time,
             })
     except ApiException as e:
@@ -214,13 +336,18 @@ def get_cronjob_details(api_client):
     try:
         response = api_client.list_cron_job_for_all_namespaces()
         for cj in response.items:
+            containers = cj.spec.job_template.spec.template.spec.containers
+            container_images = [c.image for c in containers]
             cronjobs.append({
                 'namespace': cj.metadata.namespace,
                 'name': cj.metadata.name,
                 'schedule': cj.spec.schedule,
                 'suspend': cj.spec.suspend,
                 'last_schedule_time': cj.status.last_schedule_time,
+                'container_images': ", ".join(container_images),
                 'active_jobs': len(cj.status.active) if cj.status.active else 0,
+                'concurrency_policy': cj.spec.concurrency_policy,
+                'restart_policy': cj.spec.job_template.spec.template.spec.restart_policy,
             })
     except ApiException as e:
         logging.error("Error fetching cronjobs: %s", e)
@@ -251,10 +378,12 @@ def get_namespace_details(api_client):
     try:
         response = api_client.list_namespace()
         for ns in response.items:
+            labels = json.dumps(ns.metadata.labels) if ns.metadata.labels else '{}'
             namespaces.append({
                 'name': ns.metadata.name,
                 'status': ns.status.phase,
                 'creation_timestamp': ns.metadata.creation_timestamp,
+                'labels': labels,
             })
     except ApiException as e:
         logging.error("Error fetching namespaces: %s", e)
@@ -282,11 +411,25 @@ def get_configmap_details(api_client):
     try:
         response = api_client.list_config_map_for_all_namespaces()
         for cm in response.items:
-            data_keys = ", ".join(cm.data.keys()) if cm.data else ""
+            data_count = 0
+            data_size_bytes = 0
+            data_summary = ""
+            if cm.data:
+                data_count = len(cm.data)
+                data_size_bytes = sum(len(str(v).encode('utf-8')) for v in cm.data.values())
+                keys = list(cm.data.keys())
+                summary_keys = keys[:3]
+                data_summary = ", ".join(summary_keys)
+                if len(keys) > 3:
+                    data_summary += ", ..."
+
             configmaps.append({
                 'namespace': cm.metadata.namespace,
                 'name': cm.metadata.name,
-                'data_keys': data_keys,
+                'data_count': data_count,
+                'data_size_bytes': data_size_bytes,
+                'data_summary': data_summary,
+                'data_keys': ", ".join(cm.data.keys()) if cm.data else "",
             })
     except ApiException as e:
         logging.error("Error fetching configmaps: %s", e)
@@ -338,19 +481,18 @@ def get_ingress_details(api_client):
 def get_networkpolicy_details(api_client):
     """Fetches details for all NetworkPolicy objects."""
     netpols = []
-    api_client_instance = client.ApiClient()
     try:
         response = api_client.list_network_policy_for_all_namespaces()
         for np in response.items:
-            ingress_rules = json.dumps(api_client_instance.sanitize_for_serialization(np.spec.ingress)) if np.spec.ingress else '[]'
-            egress_rules = json.dumps(api_client_instance.sanitize_for_serialization(np.spec.egress)) if np.spec.egress else '[]'
+            ingress_rules = json.dumps(api_client.api_client.sanitize_for_serialization(np.spec.ingress)) if np.spec.ingress else '[]'
+            egress_rules = json.dumps(api_client.api_client.sanitize_for_serialization(np.spec.egress)) if np.spec.egress else '[]'
             netpols.append({
                 'namespace': np.metadata.namespace,
                 'name': np.metadata.name,
                 'pod_selector': str(np.spec.pod_selector.match_labels) if np.spec.pod_selector else '{}',
                 'policy_types': ", ".join(np.spec.policy_types) if np.spec.policy_types else "",
                 'ingress_rules': ingress_rules,
-                'egress_rules': egress_rules,
+                'egress_rules' : egress_rules
             })
     except ApiException as e:
         logging.error("Error fetching network policies: %s", e)
@@ -359,11 +501,10 @@ def get_networkpolicy_details(api_client):
 def get_hpa_details(api_client):
     """Fetches details for all HorizontalPodAutoscaler objects."""
     hpas = []
-    api_client_instance = client.ApiClient()
     try:
         response = api_client.list_horizontal_pod_autoscaler_for_all_namespaces()
         for hpa in response.items:
-            metrics = json.dumps(api_client_instance.sanitize_for_serialization(hpa.spec.metrics)) if hpa.spec.metrics else '[]'
+            metrics = json.dumps(api_client.api_client.sanitize_for_serialization(hpa.spec.metrics)) if hpa.spec.metrics else '[]'
             hpas.append({
                 'namespace': hpa.metadata.namespace,
                 'name': hpa.metadata.name,
@@ -522,6 +663,24 @@ def get_pdb_details(policy_v1_api, core_v1_api):
         )
     return pdbs
 
+def get_serviceaccount_details(api_client):
+    """
+    Fetches details for all ServiceAccount objects.
+    """
+    service_accounts = []
+    try:
+        response = api_client.list_service_account_for_all_namespaces()
+        for sa in response.items:
+            service_accounts.append({
+                'namespace': sa.metadata.namespace,
+                'name': sa.metadata.name,
+                'automount_token': sa.automount_service_account_token,
+                'creation_timestamp': sa.metadata.creation_timestamp,
+            })
+    except ApiException as e:
+        logging.error("Error fetching service accounts: %s", e)
+    return service_accounts
+
 def get_kubernetes_resources(core_v1, apps_v1, batch_v1, networking_v1, autoscaling_v2, rbac_v1, policy_v1):
     """Fetches various resources from a Kubernetes cluster."""
     logging.info("  - Fetching Kubernetes resource details...")
@@ -547,28 +706,9 @@ def get_kubernetes_resources(core_v1, apps_v1, batch_v1, networking_v1, autoscal
         "resource_quotas": get_resourcequota_details(core_v1),
         "limit_ranges": get_limitrange_details(core_v1),
         "pod_disruption_budgets": get_pdb_details(policy_v1, core_v1),
+        "service_accounts": get_serviceaccount_details(core_v1),
     }
     return all_resources
-
-def get_k8s_details_for_gke():
-    """Connects to GKE cluster using local kubeconfig and fetches resources."""
-    logging.info("  - Loading kubeconfig for GKE...")
-    try:
-        config.load_kube_config()
-        core_v1 = client.CoreV1Api()
-        apps_v1 = client.AppsV1Api()
-        batch_v1 = client.BatchV1Api()
-        networking_v1 = client.NetworkingV1Api()
-        autoscaling_v2 = client.AutoscalingV2Api()
-        rbac_v1 = client.RbacAuthorizationV1Api()
-        policy_v1 = client.PolicyV1Api()
-        return get_kubernetes_resources(core_v1, apps_v1, batch_v1, networking_v1, autoscaling_v2, rbac_v1, policy_v1)
-    except config.ConfigException as e:
-        logging.error("  - Could not load kubeconfig for GKE: %s", e)
-        return {"error": f"Could not load kubeconfig: {e}"}
-    except Exception as e:
-        logging.error("  - Could not connect to GKE cluster Kubernetes API: %s", e)
-        return {"error": f"Could not connect to Kubernetes API: {e}"}
 
 def get_k8s_details_for_eks(cluster_details):
     """Get Kubernetes details for an EKS cluster."""
@@ -591,4 +731,15 @@ def get_k8s_details_for_aks(aks_client, resource_group, cluster_name):
             return get_kubernetes_resources(core_v1, apps_v1, batch_v1, networking_v1, autoscaling_v2, rbac_v1, policy_v1)
     except Exception as e:
         logging.error("  - Could not connect to AKS cluster '%s' Kubernetes API: %s", cluster_name, e)
+        return {"error": f"Could not connect to Kubernetes API: {e}"}
+
+def get_k8s_details_for_gke_cluster(cluster_details, credentials):
+    """Get Kubernetes details for a specific GKE cluster."""
+    cluster_name = cluster_details["name"]
+    logging.info("  - Getting Kubernetes resource details for GKE cluster '%s'", cluster_name)
+    try:
+        with _get_api_clients_for_gke(cluster_details, credentials) as (core_v1, apps_v1, batch_v1, networking_v1, autoscaling_v2, rbac_v1, policy_v1):
+            return get_kubernetes_resources(core_v1, apps_v1, batch_v1, networking_v1, autoscaling_v2, rbac_v1, policy_v1)
+    except Exception as e:
+        logging.error("  - Could not connect to GKE cluster '%s' Kubernetes API: %s", cluster_name, e)
         return {"error": f"Could not connect to Kubernetes API: {e}"}

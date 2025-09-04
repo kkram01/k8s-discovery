@@ -5,7 +5,7 @@ A command-line interface (CLI) tool to discover Kubernetes clusters on AWS (EKS)
 ## Features
 
 -   **Unified CLI**: A single, easy-to-use interface to discover Kubernetes resources.
--   **Multi-Cloud**: Supports AWS, Azure, and GKE.
+-   **Multi-Cloud**: Supports AWS (EKS), Azure (AKS), and GKE.
 -   **Rich Output**: Displays data in clean, colorful tables in your terminal.
 -   **CSV Export**: Save all discovered data to CSV files for further analysis.
 -   **Graceful Authentication**: Automatically uses your existing cloud CLI credentials.
@@ -20,18 +20,21 @@ To set up the development environment, you will need to have [uv](https://docs.a
     cd <repo-name>
     ```
 
-2.  **Install dependencies with Poetry**:
+2.  **Install dependencies**:
     ```bash
     uv sync
     ```
 
 3.  **Run program in the virtual environment**:
     ```bash
-        # Run the discovery tool for AWS
-        uv run -- discover aws --region us-west-2
+        # Run the discovery tool for AWS (will output to ./discovery_output)
+        uv run -- kraw aws --region us-west-2
 
         # Run the discovery tool for Azure
-        uv run -- discover azure --subscription-id "your-subscription-id"
+        uv run -- kraw azure --subscription-id "your-subscription-id"
+
+        # Run the discovery tool for GKE
+        uv run -- kraw gke --project-id "your-gcp-project-id"
     ```
 
 ## Authentication
@@ -40,7 +43,7 @@ The tool uses the default credential chains for each cloud provider.
 
 -   **AWS**: Make sure you have the AWS CLI installed and configured. You can do this by running `aws configure`.
 -   **Azure**: Make sure you have the Azure CLI installed. Log in by running `az login`.
--   **GKE**: Ensure you have a valid `kubeconfig` file that points to your GKE cluster. You can set this up using the `gcloud` CLI.
+-   **GKE**: Make sure you have the Google Cloud CLI installed. Log in by running `gcloud auth application-default login`.
 
 ## Usage
 
@@ -48,14 +51,19 @@ The main command for the tool is `discover`.
 
 ### Discover AWS EKS Clusters
 
+To scan specific regions, use the `--region` option. You can use it multiple times. If no regions are specified, all accessible EKS regions are scanned.
 ```bash
-kraw aws --region us-west-2 --output-file aws-clusters.csv
+kraw aws --region us-west-2 --output-dir ./aws-discovery-output
+
+# Scan multiple regions
+kraw aws --region us-east-1 --region us-west-2
 ```
 
 ### Discover Azure AKS Clusters
 
+To scan specific subscriptions, use the `--subscription-id` option. You can use it multiple times. If no subscriptions are specified, all accessible subscriptions are scanned.
 ```bash
-kraw azure --subscription-id "your-subscription-id" --output-file azure-clusters.csv
+kraw azure --subscription-id "your-subscription-id" --output-dir ./azure-discovery-output
 ```
 
 ### Discover GKE Resources

@@ -1,8 +1,10 @@
 import typer
-import eks_discovery, aks_discovery, k8s_resources, common
+import eks_discovery, aks_discovery, gke_discovery, k8s_resources, common
 import boto3
 import json
 import logging
+import os
+import google.auth
 from azure.identity import DefaultAzureCredential
 
 app = typer.Typer(
@@ -15,8 +17,8 @@ logging.basicConfig(
 
 @app.command()
 def aws(
-    regions: list[str] = typer.Option(None, "--region", help="Specific AWS regions to scan. If empty, all available EKS regions will be scanned."),
-    output_file: str = typer.Option("eks_data.json", help="The path to save the output JSON file.")
+    regions: list[str] = typer.Option([], "--region", help="Specific AWS regions to scan. Can be used multiple times. If empty, all available EKS regions will be scanned."),
+    output_dir: str = typer.Option("./discovery_output", help="The directory to save the output CSV files.")
 ):
     """
     Discover EKS clusters in specific or all AWS regions with detailed information.
@@ -29,15 +31,17 @@ def aws(
 
     if all_eks_data:
         logging.info(f"Found a total of {len(all_eks_data)} EKS clusters across all scanned regions.")
-        if output_file:
-            common.save_to_json(all_eks_data, output_file)
+        if output_dir:
+            json_filepath = os.path.join(output_dir, "eks_data.json")
+            common.save_to_json(all_eks_data, json_filepath)
+            common.save_to_csvs(all_eks_data, output_dir, "aws")
     else:
         logging.info("No EKS data found across scanned regions.")
 
 @app.command()
 def azure(
-    subscription_ids: list[str] = typer.Option(None, "--subscription-id", help="Specific Azure subscription IDs to scan. If empty, all accessible subscriptions will be scanned."),
-    output_file: str = typer.Option("aks_data.json", help="The path to save the output JSON file.")
+    subscription_ids: list[str] = typer.Option([], "--subscription-id", help="Specific Azure subscription IDs to scan. Can be used multiple times. If empty, all accessible subscriptions will be scanned."),
+    output_dir: str = typer.Option("./discovery_output", help="The directory to save the output CSV files.")
 ):
     """
     Discover AKS clusters in specific or all Azure subscriptions with detailed information.
@@ -61,33 +65,44 @@ def azure(
 
     if all_aks_data:
         logging.info(f"Found a total of {len(all_aks_data)} AKS clusters across all scanned subscriptions.")
-        if output_file:
-            common.save_to_json(all_aks_data, output_file)
+        if output_dir:
+            json_filepath = os.path.join(output_dir, "aks_data.json")
+            common.save_to_json(all_aks_data, json_filepath)
+            common.save_to_csvs(all_aks_data, output_dir, "azure")
     else:
         logging.info("No AKS data found across scanned subscriptions.")
 
 @app.command()
 def gke(
-    output_dir: str = typer.Option("./gke_output", help="The directory to save the output CSV files.")
+    project_ids: list[str] = typer.Option([], "--project-id", help="Specific GCP project IDs to scan. Can be used multiple times. If empty, all accessible projects will be scanned."),
+    output_dir: str = typer.Option("./discovery_output", help="The directory to save the output CSV files.")
 ):
     """
-    Discover resources in the currently configured GKE cluster.
+    Discover GKE clusters in specific or all accessible GCP projects.
     """
-    print("Discovering resources in your currently configured GKE cluster...")
-    # GKE discovery does not have a cloud-level discovery part like EKS/AKS.
-    # We will directly fetch Kubernetes details.
-    kubernetes_details = k8s_resources.get_k8s_details_for_gke()
+    try:
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    except google.auth.exceptions.DefaultCredentialsError as e:
+        logging.error("Failed to acquire Google Cloud credentials. Please run 'gcloud auth application-default login'. Error: %s", e)
+        return
 
-    if kubernetes_details and "error" not in kubernetes_details:
-        # For consistency, we'll wrap the output in the same structure.
-        # "hosting_provider_details" can be minimal for GKE as we connect directly.
-        final_gke_data = [{
-            "hosting_provider_details": {"provider": "gke", "cluster_name": "current-context"},
-            "kubernetes_details": kubernetes_details
-        }]
+    projects_to_scan = project_ids or gke_discovery.get_available_projects(credentials)
+    if not projects_to_scan:
+        logging.warning("No GCP projects found or specified to scan.")
+        return
 
-        output_file = f"{output_dir}/gke_data.json"
-        common.save_to_json(final_gke_data, output_file)
+    logging.info("Starting GKE discovery for projects: %s", projects_to_scan)
+
+    all_gke_data = gke_discovery.run_gke_discovery(credentials, projects_to_scan)
+
+    if all_gke_data:
+        logging.info(f"Found a total of {len(all_gke_data)} GKE clusters across all scanned projects.")
+        if output_dir:
+            json_filepath = os.path.join(output_dir, "gke_data.json")
+            common.save_to_json(all_gke_data, json_filepath)
+            common.save_to_csvs(all_gke_data, output_dir, "gke")
+    else:
+        logging.info("No GKE data found across scanned projects.")
 
 if __name__ == "__main__":
     app()

@@ -6,11 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from k8s_resources import get_k8s_details_for_eks
 from common import save_to_json
 
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def get_available_regions(session, service_name):
     return session.get_available_regions(service_name)
@@ -99,8 +95,19 @@ def get_eks_data_for_region(session, region):
                 cluster_details["nodegroups"] = nodegroups
                 cluster_details["fargate_profiles"] = fargate_profiles
 
-                # Get Kubernetes resource details
-                kubernetes_details = get_k8s_details_for_eks(cluster_details)
+                # Only attempt to get Kubernetes details if the cluster is in an ACTIVE state.
+                if cluster_details.get("status") == "ACTIVE":
+                    kubernetes_details = get_k8s_details_for_eks(cluster_details)
+                else:
+                    status = cluster_details.get("status", "UNKNOWN")
+                    logging.warning(
+                        "  - Skipping Kubernetes resource discovery for cluster '%s' because its status is '%s'.",
+                        cluster_name,
+                        status,
+                    )
+                    kubernetes_details = {
+                        "error": f"Cluster is not in ACTIVE state (status: {status})."
+                    }
 
                 # Structure the final output
                 final_cluster_data = {

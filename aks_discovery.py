@@ -9,7 +9,7 @@ from azure.mgmt.resource import SubscriptionClient
 from k8s_resources import get_k8s_details_for_aks
 from common import save_to_json
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def get_available_subscriptions(credential):
     """Lists all subscriptions the user has access to."""
@@ -57,9 +57,20 @@ def get_aks_data_for_subscription(credential, subscription_id):
 
             cluster_details['agentPools'] = agent_pools
 
-            kubernetes_details = get_k8s_details_for_aks(
-                aks_client, resource_group, cluster.name
-            )
+            # Only attempt to get Kubernetes details if the cluster's provisioning state is 'Succeeded'.
+            if cluster.provisioning_state == "Succeeded":
+                kubernetes_details = get_k8s_details_for_aks(
+                    aks_client, resource_group, cluster.name
+                )
+            else:
+                logging.warning(
+                    "  - Skipping Kubernetes resource discovery for cluster '%s' because its provisioning state is '%s'.",
+                    cluster.name,
+                    cluster.provisioning_state,
+                )
+                kubernetes_details = {
+                    "error": f"Cluster provisioning state is not 'Succeeded' (state: {cluster.provisioning_state})."
+                }
 
             final_cluster_data = {
                 "hosting_provider_details": cluster_details,
