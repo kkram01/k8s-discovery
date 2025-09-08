@@ -8,16 +8,27 @@ from k8s_resources import get_k8s_details_for_gke_cluster
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def get_available_projects(credentials):
-    """Lists all projects the user has access to."""
+def get_available_projects(credentials, organization_id):
+    """
+    Lists projects the user can access under a specific organization.
+    """
+    query = f"parent:organizations/{organization_id}"
+    logging.info("Listing projects in organization '%s'...", organization_id)
+
     try:
         client = resourcemanager_v3.ProjectsClient(credentials=credentials)
-        logging.info("Searching for accessible Google Cloud projects...")
-        # Add a timeout to prevent hanging on environments with many projects or network issues.
-        # The API call returns an iterator, so this timeout applies to the initial part of the iteration.
-        projects = client.search_projects(timeout=120.0)
-        project_ids = [project.project_id for project in projects]
-        logging.info("Found %d projects.", len(project_ids))
+        # The search_projects method returns an iterator that pages through results automatically.
+        # The timeout applies to each underlying API call, not the entire operation. For accounts
+        # with many projects, iterating through all of them can take a long time.
+        projects = client.search_projects(query=query, timeout=120.0)
+
+        project_ids = []
+        logging.info("Iterating through projects to build a list. This may take a while for accounts with many projects...")
+        for i, project in enumerate(projects):
+            project_ids.append(project.project_id)
+            if (i + 1) % 100 == 0:
+                logging.info("... discovered %d projects so far.", i + 1)
+        logging.info("Finished project discovery. Found a total of %d projects.", len(project_ids))
         return project_ids
     except (DefaultCredentialsError, google_exceptions.PermissionDenied) as e:
         logging.error(

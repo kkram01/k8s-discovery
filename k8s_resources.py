@@ -461,10 +461,10 @@ def get_ingress_details(api_client):
     try:
         response = api_client.list_ingress_for_all_namespaces()
         for ingress in response.items:
-            hosts = [rule.host for rule in ingress.spec.rules] if ingress.spec.rules else []
+            hosts = [rule.host for rule in ingress.spec.rules if rule.host] if ingress.spec.rules else []
             tls_secrets = [tls.secret_name for tls in ingress.spec.tls if tls.secret_name] if ingress.spec.tls else []
             annotations = json.dumps(ingress.metadata.annotations) if ingress.metadata.annotations else '{}'
-            load_balancer_ips = [i.ip for i in ingress.status.load_balancer.ingress] if ingress.status.load_balancer.ingress else []
+            load_balancer_ips = [i.ip for i in ingress.status.load_balancer.ingress if i.ip] if ingress.status.load_balancer.ingress else []
             ingresses.append({
                 'namespace': ingress.metadata.namespace,
                 'name': ingress.metadata.name,

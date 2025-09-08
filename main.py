@@ -74,19 +74,25 @@ def azure(
 
 @app.command()
 def gke(
-    project_ids: list[str] = typer.Option([], "--project-id", help="Specific GCP project IDs to scan. Can be used multiple times. If empty, all accessible projects will be scanned."),
+    project_ids: list[str] = typer.Option([], "--project-id", help="Specific GCP project IDs to scan. Can be used multiple times."),
+    gcp_organization_id: str = typer.Option(None, "--gcp-organization-id", help="The ID of the GCP organization to scan for projects (e.g., '123456789012'). This is ignored if --project-id is used."),
     output_dir: str = typer.Option("./discovery_output", help="The directory to save the output CSV files.")
 ):
     """
     Discover GKE clusters in specific or all accessible GCP projects.
+    You must specify either --project-id or --gcp-organization-id to scope the discovery.
     """
+    if not project_ids and not gcp_organization_id:
+        logging.error("Error: You must specify either --project-id or --gcp-organization-id.")
+        raise typer.Exit(code=1)
+
     try:
         credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
     except google.auth.exceptions.DefaultCredentialsError as e:
         logging.error("Failed to acquire Google Cloud credentials. Please run 'gcloud auth application-default login'. Error: %s", e)
         return
 
-    projects_to_scan = project_ids or gke_discovery.get_available_projects(credentials)
+    projects_to_scan = project_ids or gke_discovery.get_available_projects(credentials, organization_id=gcp_organization_id)
     if not projects_to_scan:
         logging.warning("No GCP projects found or specified to scan.")
         return

@@ -47,15 +47,17 @@ The tool uses the default credential chains for each cloud provider.
 
 ## Usage
 
-The main command for the tool is `discover`.
-
 ### Discover AWS EKS Clusters
 
-To scan specific regions, use the `--region` option. You can use it multiple times. If no regions are specified, all accessible EKS regions are scanned.
+You can scan specific AWS regions using the `--region` option. If no region is specified, the tool will automatically scan all AWS regions where EKS is available.
+
+**Scan a specific region:**
 ```bash
 kraw aws --region us-west-2 --output-dir ./aws-discovery-output
+```
 
-# Scan multiple regions
+**Scan multiple regions:**
+```bash
 kraw aws --region us-east-1 --region us-west-2
 ```
 
@@ -68,8 +70,25 @@ kraw azure --subscription-id "your-subscription-id" --output-dir ./azure-discove
 
 ### Discover GKE Resources
 
+For GKE discovery, it is mandatory to provide a scope. You must specify either one or more project IDs or a single organization ID.
+
+Scan by Project ID:
+Use the `--project-id` option to scan one or more specific GCP projects.
+
 ```bash
-kraw gke --output-dir ./gke-discovery-output
+kraw gke --project-id "your-gcp-project-id" --output-dir ./gke-discovery-output
+```
+
+```bash
+kraw gke --project-id "project-a" --project-id "project-b"
+```
+
+Scan by Organization ID:
+
+Use the `--gcp-organization-id` option to discover and scan all projects within a specific GCP organization.
+
+```bash 
+kraw gke --gcp-organization-id "123456789012" --output-dir ./gke-discovery-output
 ```
 
 ## Packaging the Application
