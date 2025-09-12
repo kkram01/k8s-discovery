@@ -1,7 +1,6 @@
 argcomplete==3.5.3
 awscli==1.42.23
 azure-cli==2.77.0
-azure-common==1.1.28
 azure-core==1.35.0
 azure-identity==1.24.0
 azure-mgmt-containerservice==39.1.0
