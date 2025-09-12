@@ -1,6 +1,4 @@
 argcomplete==3.5.3
-awscli==1.42.23
-azure-cli==2.77.0
 azure-core==1.35.0
 azure-identity==1.24.0
 azure-mgmt-containerservice==39.1.0
@@ -12,17 +10,10 @@ google-api-core==2.25.1
 google-auth==2.40.3
 google-cloud-container==2.59.0
 google-cloud-resource-manager==1.14.2
-jsondiff==2.0.0
 kubernetes==33.1.0
-macholib==1.16.3
 microsoft-security-utilities-secret-masker==1.0.0b4
 pandas==2.3.1
-pkginfo==1.12.1.2
 pyinstaller==6.15.0
 pyinstaller-hooks-contrib==2025.8
-PySocks==1.7.1
 setuptools==80.9.0
 typer==0.16.0
-typing_extensions==4.14.1
-wrapt==1.17.3
-xmltodict==0.14.2
