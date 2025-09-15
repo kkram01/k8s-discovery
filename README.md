@@ -1,7 +1,6 @@
-# GKE Migration Toolkit
+# Kubescan | Multi-Cloud Kubernetes Cluster Discovery
 
-A command-line interface (CLI) tool to discover Kubernetes clusters on AWS (EKS) and Azure (AKS), to aid in migration planning to Google Cloud (GKE).
-
+A command-line interface (CLI) tool to discover Kubernetes clusters on AWS (EKS), Azure (AKS), and Google Cloud (GKE), to aid in migration planning to Google Kubernetes Engine.
 ## Features
 
 -   **Unified CLI**: A single, easy-to-use interface to discover Kubernetes resources.
@@ -11,8 +10,10 @@ A command-line interface (CLI) tool to discover Kubernetes clusters on AWS (EKS)
 -   **Graceful Authentication**: Automatically uses your existing cloud CLI credentials.
 
 ## Development Setup
+You can set up the development environment in two ways: using [uv](https://docs.astral.sh/uv/getting-started/installation/) or a Python virtual environment.
 
-To set up the development environment, you will need to have [uv](https://docs.astral.sh/uv/getting-started/installation/) installed along with the latest version of Python.
+### Option 1: Setup with uv
+
 
 1.  **Clone the repository**:
     ```bash
@@ -36,6 +37,32 @@ To set up the development environment, you will need to have [uv](https://docs.a
         # Run the discovery tool for GKE
         uv run -- kraw gke --project-id "your-gcp-project-id"
     ```
+
+### Option 2: Setup with Python Virtual Environment
+1.  **Clone the repository**:
+    ```bash
+    git clone <your-repo-url>
+    cd <repo-name>
+    ```
+
+2. **Create and activate a virtual environment**:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # On Linux/Mac
+.venv\Scripts\activate      # On Windows
+```
+3. **Install dependencies:**:
+```bash
+pip3 install -r requirements.txt
+```
+
+4. **Run the CLI:**:
+```bash
+python main.py aws --region us-west-2
+python main.py azure --subscription-id "your-subscription-id"
+python main.py gke --project-id "your-gcp-project-id"
+```
+
 
 ## Authentication
 
