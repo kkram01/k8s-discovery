@@ -120,8 +120,8 @@ kraw gke --gcp-organization-id "123456789012" --output-dir ./gke-discovery-outpu
 
 ## Packaging the Application
 
-# Install PyInstaller as a dev dependency
-uv add -D pyinstaller
-
-# Run PyInstaller
-uv run pyinstaller --onefile --name kraw main.py
+### Install PyInstaller as a dev dependency
+`uv add -D pyinstaller`
+ 
+### Run PyInstaller
+`uv run pyinstaller --onefile --name kraw main.py`
