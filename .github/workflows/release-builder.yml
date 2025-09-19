@@ -1,0 +1,107 @@
+# This workflow builds and releases the Python application
+# It triggers automatically when a new tag (e.g., v1.0.0) is pushed
+
+name: Build and Release
+
+# 1. TRIGGER: Run only when a tag starting with 'v' is pushed
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # 2. BUILD JOB: Runs on a matrix of OSes
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # Define the build matrix
+        # Use macos-13 for intel (x86_64) builds
+        # Use macos-latest (14) for arm64 (Apple Silicon)
+        os: [ubuntu-latest, windows-latest, macos-13, macos-latest]
+        python-version: ["3.10"] # Specify your project's Python version
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Run PyInstaller (build the app)
+        run: pyinstaller --onedir --name kubescan main.py
+
+      - name: Prepare artifact name
+        id: prep
+        shell: bash
+        run: |
+          # Set artifact name based on OS
+          ARTIFACT_NAME="kubescan-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}"
+          # Set the path to the built directory
+          ARTIFACT_PATH="dist/kubescan"
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            ARTIFACT_NAME+=".zip"
+            ARTIFACT_PATH="dist/kubescan" # PyInstaller output dir
+          else
+            ARTIFACT_NAME+=".tar.gz"
+            ARTIFACT_PATH="dist/kubescan" # PyInstaller output dir
+          fi
+          echo "artifact_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          echo "artifact_path=${ARTIFACT_PATH}" >> $GITHUB_OUTPUT
+
+      - name: Package artifact (Zip or Tar.gz)
+        shell: bash
+        run: |
+          # Package the 'dist/kubescan' directory
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            # Use powershell to zip on Windows
+            powershell Compress-Archive -Path ${{ steps.prep.outputs.artifact_path }} -DestinationPath ${{ steps.prep.outputs.artifact_name }}
+          else
+            # Use tar to gzip on Linux/macOS
+            tar -czvf ${{ steps.prep.outputs.artifact_name }} -C dist kubescan
+          fi
+
+      - name: Upload artifact for release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prep.outputs.artifact_name }}
+          path: ${{ steps.prep.outputs.artifact_name }}
+          retention-days: 1 # We only need it for the next job
+
+  # 3. RELEASE JOB: Creates the GitHub Release
+  create-release:
+    name: Create GitHub Release
+    needs: build # Wait for all builds to finish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create/edit a release
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Download all artifacts uploaded by the 'build' job
+          path: release-artifacts
+          merge-multiple: true # Merge all artifacts into one directory
+
+      - name: Create new GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # This action uses the tag name for the release
+          # e.g., tag 'v1.0.0' creates release 'v1.0.0'
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: "Official release for ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          # Upload all files from the 'release-artifacts' directory
+          files: release-artifacts/*
